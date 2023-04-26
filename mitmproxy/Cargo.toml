@@ -15,6 +15,9 @@ xz2 = { version = "0.1.7", features = ["static"] }
 tempfile = "3.5.0"
 pyo3-log = "0.8.1"
 log = "0.4.17"
+serde_json = "1.0.96"
+tar = "0.4.38"
+serde_yaml = "0.9.21"
 
 [lib]
 crate-type = ["cdylib"]

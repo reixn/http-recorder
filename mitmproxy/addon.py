@@ -3,6 +3,16 @@ import http_recorder
 from typing import Optional
 from mitmproxy import ctx, http, command
 
+ignore_hosts = {
+    "www.googletagmanager.com", "fonts.googleapis.com", "fonts.gstatic.com"
+}
+
+
+def should_add_flow(flow: http.HTTPFlow) -> bool:
+    if flow.request.host in ignore_hosts:
+        return False
+    return True
+
 
 class HttpRecorder:
 
@@ -13,40 +23,20 @@ class HttpRecorder:
         loader.add_option(
             name="record_dest",
             typespec=str,
-            default="record.tar.xz",
+            default=".",
             help="path to http record file",
-        )
-        loader.add_option(
-            name="save_duration",
-            typespec=int,
-            default=10,
-            help="auto save duration",
-        )
-        loader.add_option(
-            name="last_log",
-            typespec=Optional[str],
-            default=None,
-            help="path to last log file",
         )
 
     def configure(self, update):
-        if "record_dest" in update or "save_duration" in update or "last_log" in update:
-            self.recorder = http_recorder.Recorder(
-                ctx.options.record_dest,
-                ctx.options.save_duration,
-                ctx.options.last_log,
-            )
+        if "record_dest" in update:
+            self.recorder = http_recorder.Recorder(ctx.options.record_dest)
 
     def done(self):
         self.recorder.finish()
 
     def response(self, flow: http.HTTPFlow):
-        if flow.error == None:
+        if flow.error == None and should_add_flow(flow):
             self.recorder.add_flow(flow)
-
-    @command.command("http-recorder.save")
-    def save(self):
-        self.recorder.save_tar()
 
 
 addons = [HttpRecorder()]

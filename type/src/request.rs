@@ -1,5 +1,5 @@
 use crate::{
-    content::{data::DataMap, Content},
+    content::Content,
     header::{self, Headers, InvalidHeader},
     url::Url,
     HttpVersion, Method,
@@ -171,15 +171,6 @@ impl Body {
             content_type,
             content.to_owned().into_boxed_slice(),
         )))
-    }
-    pub(crate) fn take_data<'a: 'b, 'b>(&'a self, data: &mut DataMap<'b>) {
-        match self {
-            Self::Content(c) => c.take_data(data),
-            Self::MultipartForm(f) => {
-                f.iter().for_each(|v| v.content.take_data(data));
-            }
-            _ => (),
-        }
     }
 }
 

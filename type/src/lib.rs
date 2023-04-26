@@ -1,7 +1,7 @@
 #![feature(iterator_try_collect)]
 
 use serde::{Deserialize, Serialize};
-use std::{error, fmt::Display, io::Write, net::SocketAddr, str::FromStr};
+use std::{error, fmt::Display, net::SocketAddr, str::FromStr};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HttpVersion {
@@ -123,8 +123,18 @@ pub struct Timings {
     #[serde(with = "serde_date_time")]
     pub finish_time: chrono::DateTime<chrono::Utc>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Version {
+    pub major: u16,
+    pub minor: u16,
+}
+pub const VERSION: Version = Version { major: 0, minor: 1 };
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Entry {
+    pub version: Version,
+    pub index: u32,
     pub client_addr: SocketAddr,
     pub server_addr: Option<SocketAddr>,
     pub timings: Timings,
@@ -132,52 +142,48 @@ pub struct Entry {
     pub response: response::Response,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Version {
-    pub major: u32,
-    pub minor: u32,
-}
-pub const VERSION: Version = Version { major: 0, minor: 1 };
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HttpRecord {
-    pub version: Version,
-    pub entries: Vec<Entry>,
+pub struct BodySize {
+    pub request: u64,
+    pub response: u64,
 }
-impl Default for HttpRecord {
-    fn default() -> Self {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Entries<T> {
+    pub begin_index: u32,
+    pub begin_time: Timings,
+    pub end_index: u32,
+    pub end_time: Timings,
+    pub count: u32,
+    pub body_size: BodySize,
+    pub data: T,
+}
+impl<T: Default> Entries<T> {
+    pub fn new(begin_index: u32, begin_time: Timings) -> Self {
         Self {
-            version: VERSION,
-            entries: Vec::new(),
+            begin_index,
+            begin_time: begin_time.clone(),
+            end_index: begin_index,
+            end_time: begin_time,
+            count: 0,
+            body_size: BodySize {
+                request: 0,
+                response: 0,
+            },
+            data: T::default(),
         }
     }
-}
-impl HttpRecord {
-    pub fn write_tar<W: Write>(&self, writer: W) -> std::io::Result<W> {
-        use content::data::{append_file, DataMap};
-        let mut builder = tar::Builder::new(writer);
-        {
-            let mut data = DataMap::default();
-            self.entries.iter().for_each(|v| {
-                if let Some(v) = &v.request.body {
-                    v.take_data(&mut data);
-                }
-                if let Some(v) = &v.response.content {
-                    v.take_data(&mut data);
-                }
-            });
-            data.write_tar(&mut builder)?;
-        }
-        append_file(
-            &mut builder,
-            "entries.json",
-            serde_json::to_vec(&self.entries).unwrap().as_slice(),
-        )?;
-        append_file(
-            &mut builder,
-            "version.json",
-            serde_json::to_vec(&self.version).unwrap().as_slice(),
-        )?;
-        builder.into_inner()
+    pub fn update(&mut self, entry: &Entry) {
+        self.end_index = entry.index;
+        self.end_time = entry.timings.clone();
+        self.count += 1;
+        self.body_size.request += entry.request.body.as_ref().map_or(0, |b| match b {
+            request::Body::Content(c) => c.size,
+            request::Body::MultipartForm(f) => f.iter().map(|f| f.content.size).sum(),
+            request::Body::UrlEncodedForm(_) => 0,
+        });
+        self.body_size.response += entry.response.content.as_ref().map_or(0, |r| r.size);
+    }
+    pub const fn content_size(&self) -> u64 {
+        self.body_size.request + self.body_size.response
     }
 }

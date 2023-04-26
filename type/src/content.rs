@@ -43,12 +43,52 @@ mod serde_data {
         }
     }
 }
+mod serde_digest {
+    use std::fmt::Display;
 
-pub(crate) mod data;
+    use serde::{de, Deserializer, Serializer};
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct SHA256Digest(#[serde(with = "hex::serde")] pub [u8; 32]);
+    pub fn serialize<const N: usize, S: Serializer>(
+        value: &[u8; N],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        if serializer.is_human_readable() {
+            hex::serde::serialize(value, serializer)
+        } else {
+            serializer.serialize_bytes(value)
+        }
+    }
+    pub fn deserialize<'de, const N: usize, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<[u8; N], D::Error>
+    where
+        [u8; N]: hex::FromHex,
+        <[u8; N] as hex::FromHex>::Error: Display,
+    {
+        if deserializer.is_human_readable() {
+            hex::serde::deserialize(deserializer)
+        } else {
+            struct Visit<const N: usize>;
+            impl<'de, const N: usize> de::Visitor<'de> for Visit<N> {
+                type Value = [u8; N];
+                fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                    write!(formatter, "{} bit hash", N)
+                }
+                fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+                where
+                    E: de::Error,
+                {
+                    v.try_into().map_err(E::custom)
+                }
+            }
+            deserializer.deserialize_bytes(Visit)
+        }
+    }
+}
+
 pub const SHA256_OUTPUT_SIZE: usize = 32;
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct SHA256Digest(#[serde(with = "serde_digest")] pub [u8; SHA256_OUTPUT_SIZE]);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "algo", content = "hash")]
@@ -62,6 +102,7 @@ pub struct Content {
     pub content_type: mime::Mime,
     pub digest: Digest,
     pub extension: Option<String>,
+    pub size: u64,
     #[serde(with = "serde_data")]
     pub data: Option<Box<[u8]>>,
 }
@@ -94,17 +135,8 @@ impl Content {
             },
             extension: mime2ext::mime2ext(&content_type).map(|v| v.to_string()),
             content_type,
+            size: data.len() as u64,
             data: Some(data),
-        }
-    }
-    pub(crate) fn take_data<'a: 'b, 'b>(&'a self, data: &mut data::DataMap<'b>) {
-        if let Some(d) = &self.data {
-            let Digest::SHA256(v) = &self.digest;
-            data.sha256.push(data::Data {
-                digest: &v.0,
-                extension: self.extension.as_ref().map(|v| v.as_str()),
-                data: d.as_ref(),
-            });
         }
     }
 }
