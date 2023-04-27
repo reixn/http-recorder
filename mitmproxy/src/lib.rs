@@ -5,7 +5,7 @@ use pyo3::{pyclass, pymethods, pymodule, FromPyObject};
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::mpsc,
+    sync::Arc,
 };
 
 #[derive(FromPyObject)]
@@ -88,7 +88,7 @@ pub struct Flow<'a> {
     response: Response<'a>,
 }
 impl<'a> Flow<'a> {
-    fn to_entry(self, index: u32) -> anyhow::Result<http_recorder::Entry> {
+    fn into_entry(self, index: u32) -> anyhow::Result<http_recorder::Entry> {
         use chrono::TimeZone;
         let utc = chrono::Utc;
         Ok(http_recorder::Entry {
@@ -101,9 +101,9 @@ impl<'a> Flow<'a> {
             },
             timings: http_recorder::Timings {
                 start_time: utc
-                    .timestamp_nanos((self.request.timestamp_start * 1_000_000_000f64) as i64),
+                    .timestamp_nanos((self.request.timestamp_start * 1_000_000_000_f64) as i64),
                 finish_time: utc
-                    .timestamp_nanos((self.response.timestamp_end * 1000_000_000f64) as i64),
+                    .timestamp_nanos((self.response.timestamp_end * 1_000_000_000_f64) as i64),
             },
             response: self.response.into_response(self.request.url)?,
             request: self.request.into_request()?,
@@ -111,93 +111,66 @@ impl<'a> Flow<'a> {
     }
 }
 
-type Receiver = mpsc::Receiver<http_recorder::Entry>;
-
 mod tar_saver;
 mod tmp_saver;
 
-struct Saver {
-    receiver: Receiver,
-    tmp_saver: tmp_saver::TmpSaver,
-    tar_saver: tar_saver::DestSaver,
-}
-impl Saver {
-    fn new<P: AsRef<Path>>(
-        receiver: Receiver,
-        dest: P,
-        entry: http_recorder::Entry,
-    ) -> anyhow::Result<Self> {
-        let mut tar_saver = tar_saver::DestSaver::new(dest)?;
-        tar_saver
-            .add_entry(&entry)
-            .context("failed to add entry to dest")?;
-        Ok(Self {
-            receiver,
-            tar_saver,
-            tmp_saver: tmp_saver::TmpSaver::new(entry).context("failed to create tmp saver")?,
-        })
-    }
-    fn run(mut self) -> anyhow::Result<()> {
-        for entry in self.receiver.into_iter() {
-            self.tar_saver
-                .add_entry(&entry)
-                .context("failed to add entry to dest")?;
-            if let Err(e) = self.tmp_saver.add_entry(entry) {
-                match e {
-                    tmp_saver::AddEntryError::Io(e) => {
-                        return Err(e).context("failed to save item to tmp dir")
-                    }
-                    tmp_saver::AddEntryError::Packer => break,
-                }
-            }
-        }
-        self.tar_saver
-            .finish()
-            .context("failed to close dest file")?;
-        fs::remove_dir_all(self.tmp_saver.finish()?).context("failed to remove tmp dir")
-    }
-}
-
 struct InnerRecorder {
     index: u32,
-    sender: mpsc::Sender<http_recorder::Entry>,
-    handle: std::thread::JoinHandle<anyhow::Result<()>>,
+    tmp_saver: tmp_saver::TmpSaver,
+    dest_saver: tar_saver::DestSaverHandle,
 }
 enum AddFlowError {
     ParseError(anyhow::Error),
-    SaveError,
+    SaveError(anyhow::Error),
+    SaverFailed,
 }
 impl InnerRecorder {
     fn new<P: AsRef<Path>>(dest: P, flow: Flow<'_>) -> anyhow::Result<Self> {
-        let entry = flow.to_entry(0)?;
-        let (sender, receiver) = mpsc::channel();
-        Ok(Self {
-            sender,
-            index: 1,
-            handle: std::thread::Builder::new()
-                .name(String::from("request-saver"))
-                .spawn({
-                    let saver = Saver::new(receiver, dest, entry)?;
-                    move || Saver::run(saver)
-                })
-                .context("failed to spawn thrad")?,
-        })
-    }
-    fn add_flow(&mut self, flow: Flow<'_>) -> Result<(), AddFlowError> {
-        match self.sender.send(
-            flow.to_entry(self.index)
-                .map_err(AddFlowError::ParseError)?,
-        ) {
-            Ok(()) => {
-                self.index += 1;
-                Ok(())
-            }
-            Err(_) => Err(AddFlowError::SaveError),
+        let entry = flow.into_entry(0)?;
+        let mut ret = Self {
+            index: 0,
+            tmp_saver: tmp_saver::TmpSaver::new(&entry).context("failed to start tmp saver")?,
+            dest_saver: tar_saver::DestSaver::start(dest, &entry)
+                .context("failed to start tar saver")?,
+        };
+        match ret.save_entry(Arc::new(entry)) {
+            Ok(()) => Ok(ret),
+            Err(e) => Err(match e {
+                AddFlowError::ParseError(e) => e.context("failed to parse flow"),
+                AddFlowError::SaveError(e) => e,
+                AddFlowError::SaverFailed => {
+                    panic!("saver failed {:?}", ret.finish().unwrap_err())
+                }
+            }),
         }
     }
-    fn finish(self) -> anyhow::Result<()> {
-        drop(self.sender);
-        self.handle.join().unwrap()
+    fn save_entry(&mut self, entry: Arc<http_recorder::Entry>) -> Result<(), AddFlowError> {
+        if let Err(e) = self.tmp_saver.add_entry(Arc::clone(&entry)) {
+            return Err(match e {
+                tmp_saver::AddEntryError::Io(e) => AddFlowError::SaveError(
+                    anyhow::Error::new(e).context("failed to save entry to tmpdir"),
+                ),
+                tmp_saver::AddEntryError::Packer => AddFlowError::SaverFailed,
+            });
+        }
+        self.dest_saver
+            .sender
+            .send(entry)
+            .map_err(|_| AddFlowError::SaverFailed)
+    }
+    fn add_flow(&mut self, flow: Flow<'_>) -> Result<(), AddFlowError> {
+        self.save_entry(Arc::new(
+            flow.into_entry(self.index)
+                .map_err(AddFlowError::ParseError)?,
+        ))?;
+        self.index += 1;
+        Ok(())
+    }
+    fn finish(self) -> anyhow::Result<PathBuf> {
+        self.dest_saver
+            .finish()
+            .context("failed to finish dest saver")?;
+        self.tmp_saver.finish()
     }
 }
 
@@ -221,7 +194,8 @@ impl Recorder {
             Some(i) => match i.add_flow(flow) {
                 Ok(()) => Ok(()),
                 Err(AddFlowError::ParseError(p)) => Err(p),
-                Err(AddFlowError::SaveError) => Ok(self.finish().unwrap()),
+                Err(AddFlowError::SaveError(e)) => panic!("{:?}", e),
+                Err(AddFlowError::SaverFailed) => self.finish(),
             },
             None => {
                 self.inner = Some(InnerRecorder::new(self.dest.as_path(), flow)?);
@@ -231,7 +205,12 @@ impl Recorder {
     }
     pub fn finish(&mut self) -> anyhow::Result<()> {
         match self.inner.take() {
-            Some(i) => i.finish(),
+            Some(i) => match i.finish() {
+                Ok(p) => fs::remove_dir_all(p).context("failed to remove tmp dir"),
+                Err(e) => {
+                    panic!("saver failed: {:?}", e)
+                }
+            },
             None => Ok(()),
         }
     }

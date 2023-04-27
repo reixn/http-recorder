@@ -4,24 +4,24 @@ use std::{
     fs, io,
     mem::swap,
     path::{Path, PathBuf},
-    sync::mpsc,
+    sync::{mpsc, Arc},
     thread,
 };
 
-fn write_entries(entries: &Entries<Vec<Entry>>, path: &Path) -> anyhow::Result<()> {
+type TmpEntries = Entries<Vec<Arc<Entry>>>;
+
+fn write_entries(entries: &TmpEntries, path: &Path) -> anyhow::Result<()> {
     let mut buf = xz2::write::XzEncoder::new(
         io::BufWriter::new(fs::File::create(path).context("failed to create pack file")?),
         9,
     );
-    ciborium::ser::into_writer(&entries, &mut buf).context("failed to write file")?;
+    ciborium::ser::into_writer(entries, &mut buf).context("failed to write file")?;
     buf.finish()
         .context("failed to finish compression")?
         .into_inner()
         .context("failed to flush buffer")?;
     Ok(())
 }
-
-type TmpEntries = Entries<Vec<Entry>>;
 
 struct PackerHandle {
     sender: mpsc::Sender<TmpEntries>,
@@ -120,37 +120,23 @@ fn write_entry(path: &mut PathBuf, entry: &Entry) -> Result<(), io::Error> {
     Ok(())
 }
 impl TmpSaver {
-    pub fn new(entry: Entry) -> anyhow::Result<Self> {
+    pub fn new(entry: &Entry) -> anyhow::Result<Self> {
         let tmp_dir = tempfile::Builder::new()
             .prefix("http-recorder-mitmproxy")
             .tempdir()
             .context("failed to create temp directory")?;
         let mut unpacked_path = tmp_dir.path().join("unpacked");
         fs::create_dir(&unpacked_path).context("failed to create unpacked dir")?;
-        write_entry(&mut unpacked_path, &entry).context("failed to write entry")?;
-        let mut ret = Self {
+        write_entry(&mut unpacked_path, entry).context("failed to write entry")?;
+        Ok(Self {
             unpacked_path: unpacked_path.clone(),
             packer: Packer::start(tmp_dir.path().to_path_buf(), unpacked_path)
                 .context("failed to start packer")?,
             entries: Entries::new(entry.index, entry.timings.clone()),
             tmp_dir: tmp_dir.into_path(),
-        };
-        ret.save_entry(entry).context("failed to write entry")?;
-        Ok(ret)
+        })
     }
-    fn save_entry(&mut self, entry: Entry) -> Result<(), io::Error> {
-        {
-            self.unpacked_path.push(format!("{}.bin", entry.index));
-            let mut data = Vec::new();
-            ciborium::ser::into_writer(&entry, &mut data).unwrap();
-            fs::write(&self.unpacked_path, data)?;
-            self.unpacked_path.pop();
-        }
-        self.entries.update(&entry);
-        self.entries.data.push(entry);
-        Ok(())
-    }
-    pub fn add_entry(&mut self, entry: Entry) -> Result<(), AddEntryError> {
+    pub fn add_entry(&mut self, entry: Arc<Entry>) -> Result<(), AddEntryError> {
         if self.entries.content_size() >= TMP_PACK_SIZE {
             let mut entries = Entries::new(entry.index, entry.timings.clone());
             swap(&mut self.entries, &mut entries);
@@ -159,7 +145,16 @@ impl TmpSaver {
                 .send(entries)
                 .map_err(|_| AddEntryError::Packer)?;
         }
-        self.save_entry(entry).map_err(AddEntryError::Io)
+        {
+            self.unpacked_path.push(format!("{}.bin", entry.index));
+            let mut data = Vec::new();
+            ciborium::ser::into_writer(entry.as_ref(), &mut data).unwrap();
+            fs::write(&self.unpacked_path, data).map_err(AddEntryError::Io)?;
+            self.unpacked_path.pop();
+        }
+        self.entries.update(&entry);
+        self.entries.data.push(entry);
+        Ok(())
     }
     pub fn finish(self) -> anyhow::Result<PathBuf> {
         self.packer.finish()?;
