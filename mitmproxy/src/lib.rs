@@ -139,7 +139,8 @@ impl InnerRecorder {
                 AddFlowError::ParseError(e) => e.context("failed to parse flow"),
                 AddFlowError::SaveError(e) => e,
                 AddFlowError::SaverFailed => {
-                    panic!("saver failed {:?}", ret.finish().unwrap_err())
+                    log::error!("saver failed {:?}", ret.finish().unwrap_err());
+                    std::process::abort();
                 }
             }),
         }
@@ -194,7 +195,10 @@ impl Recorder {
             Some(i) => match i.add_flow(flow) {
                 Ok(()) => Ok(()),
                 Err(AddFlowError::ParseError(p)) => Err(p),
-                Err(AddFlowError::SaveError(e)) => panic!("{:?}", e),
+                Err(AddFlowError::SaveError(e)) => {
+                    log::error!("{:?}", e);
+                    std::process::abort()
+                }
                 Err(AddFlowError::SaverFailed) => self.finish(),
             },
             None => {
@@ -208,7 +212,8 @@ impl Recorder {
             Some(i) => match i.finish() {
                 Ok(p) => fs::remove_dir_all(p).context("failed to remove tmp dir"),
                 Err(e) => {
-                    panic!("saver failed: {:?}", e)
+                    log::error!("saver failed: {:?}", e);
+                    std::process::abort()
                 }
             },
             None => Ok(()),
