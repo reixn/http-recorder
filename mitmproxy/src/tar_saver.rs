@@ -164,10 +164,18 @@ pub struct DestSaver {
 impl DestSaver {
     pub fn start<P: AsRef<Path>>(
         path: P,
+        name: &str,
         core: Option<core_affinity::CoreId>,
         entry: &Entry,
     ) -> anyhow::Result<DestSaverHandle> {
-        let path = path.as_ref().to_path_buf();
+        let path = {
+            let mut p = path.as_ref().to_path_buf();
+            let t = chrono::Local::now();
+            p.push(t.date_naive().to_string());
+            p.push(format!("{}-{}", name, t.time()));
+            p
+        };
+        fs::create_dir_all(&path).context("failed to create dest dir")?;
         let (sender, receiver) = mpsc::channel();
         let ret = Self {
             count: 0,

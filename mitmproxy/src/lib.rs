@@ -125,7 +125,7 @@ enum AddFlowError {
     SaverFailed,
 }
 impl InnerRecorder {
-    fn new<P: AsRef<Path>>(dest: P, flow: Flow<'_>) -> anyhow::Result<Self> {
+    fn new<P: AsRef<Path>>(dest: P, name: &str, flow: Flow<'_>) -> anyhow::Result<Self> {
         let entry = flow.into_entry(0)?;
         let (tmp_core, dest_core) = {
             let cores = core_affinity::get_core_ids().unwrap_or_default();
@@ -138,7 +138,7 @@ impl InnerRecorder {
             index: 0,
             tmp_saver: tmp_saver::TmpSaver::new(tmp_core, &entry)
                 .context("failed to start tmp saver")?,
-            dest_saver: tar_saver::DestSaver::start(dest, dest_core, &entry)
+            dest_saver: tar_saver::DestSaver::start(dest, name, dest_core, &entry)
                 .context("failed to start tar saver")?,
         };
         match ret.save_entry(Arc::new(entry)) {
@@ -186,15 +186,17 @@ impl InnerRecorder {
 #[pyclass]
 struct Recorder {
     dest: PathBuf,
+    name: String,
     inner: Option<InnerRecorder>,
 }
 
 #[pymethods]
 impl Recorder {
     #[new]
-    pub fn new(dest: &str) -> anyhow::Result<Self> {
+    pub fn new(dest: &str, name: &str) -> anyhow::Result<Self> {
         Ok(Self {
             dest: PathBuf::from(dest),
+            name: name.to_owned(),
             inner: None,
         })
     }
@@ -210,7 +212,7 @@ impl Recorder {
                 Err(AddFlowError::SaverFailed) => self.finish(),
             },
             None => {
-                self.inner = Some(InnerRecorder::new(self.dest.as_path(), flow)?);
+                self.inner = Some(InnerRecorder::new(&self.dest, self.name.as_str(), flow)?);
                 Ok(())
             }
         }

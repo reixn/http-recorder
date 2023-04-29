@@ -26,10 +26,19 @@ class HttpRecorder:
             default=".",
             help="path to http record file",
         )
+        loader.add_option(
+            name="record_name",
+            typespec=str,
+            default="record",
+            help="name of http record",
+        )
 
     def configure(self, update):
-        if "record_dest" in update:
-            self.recorder = http_recorder.Recorder(ctx.options.record_dest)
+        if "record_dest" in update or "record_name" in update:
+            self.recorder = http_recorder.Recorder(
+                ctx.options.record_dest,
+                ctx.options.record_name,
+            )
 
     def done(self):
         self.recorder.finish()
