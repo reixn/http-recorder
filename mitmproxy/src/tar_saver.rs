@@ -42,7 +42,7 @@ impl TarFile {
         };
         let mut file_header = {
             let mut ret = tar::Header::new_gnu();
-            ret.set_mode(0o644);
+            ret.set_mode(0o444);
             ret
         };
         let mut path = match self.hosts.entry(entry.request.url.host.clone()) {
