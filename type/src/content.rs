@@ -25,22 +25,18 @@ mod serde_mime {
     }
 }
 mod serde_data {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde::{Deserializer, Serialize, Serializer};
     pub type Value = Option<Box<[u8]>>;
 
     pub fn serialize<S: Serializer>(value: &Value, serializer: S) -> Result<S::Ok, S::Error> {
         if serializer.is_human_readable() {
             Value::None.serialize(serializer)
         } else {
-            value.serialize(serializer)
+            serde_bytes::serialize(value, serializer)
         }
     }
     pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Value, D::Error> {
-        if deserializer.is_human_readable() {
-            Ok(None)
-        } else {
-            Value::deserialize(deserializer)
-        }
+        serde_bytes::deserialize(deserializer)
     }
 }
 mod serde_digest {
