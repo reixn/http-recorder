@@ -149,7 +149,11 @@ pub struct DestSaver {
     tar_file: TarFile,
 }
 impl DestSaver {
-    pub fn start<P: AsRef<Path>>(path: P, entry: &Entry) -> anyhow::Result<DestSaverHandle> {
+    pub fn start<P: AsRef<Path>>(
+        path: P,
+        core: Option<core_affinity::CoreId>,
+        entry: &Entry,
+    ) -> anyhow::Result<DestSaverHandle> {
         let path = path.as_ref().to_path_buf();
         let (sender, receiver) = mpsc::channel();
         let ret = Self {
@@ -162,7 +166,12 @@ impl DestSaver {
         Ok(DestSaverHandle {
             handle: thread::Builder::new()
                 .name(String::from("tar-saver"))
-                .spawn(|| ret.run(receiver))
+                .spawn(move || {
+                    if let Some(c) = core {
+                        core_affinity::set_for_current(c);
+                    }
+                    ret.run(receiver)
+                })
                 .context("failed to spawn thread")?,
             sender,
         })

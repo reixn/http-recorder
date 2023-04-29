@@ -127,10 +127,18 @@ enum AddFlowError {
 impl InnerRecorder {
     fn new<P: AsRef<Path>>(dest: P, flow: Flow<'_>) -> anyhow::Result<Self> {
         let entry = flow.into_entry(0)?;
+        let (tmp_core, dest_core) = {
+            let cores = core_affinity::get_core_ids().unwrap_or_default();
+            if cores.len() < 3 {
+                log::warn!("too few cpu cores: {}, at lease 3 recommanded", cores.len());
+            }
+            (cores.get(0).copied(), cores.get(1).copied())
+        };
         let mut ret = Self {
             index: 0,
-            tmp_saver: tmp_saver::TmpSaver::new(&entry).context("failed to start tmp saver")?,
-            dest_saver: tar_saver::DestSaver::start(dest, &entry)
+            tmp_saver: tmp_saver::TmpSaver::new(tmp_core, &entry)
+                .context("failed to start tmp saver")?,
+            dest_saver: tar_saver::DestSaver::start(dest, dest_core, &entry)
                 .context("failed to start tar saver")?,
         };
         match ret.save_entry(Arc::new(entry)) {

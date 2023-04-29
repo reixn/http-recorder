@@ -39,13 +39,20 @@ struct Packer {
     receiver: mpsc::Receiver<TmpEntries>,
 }
 impl Packer {
-    fn start(path: PathBuf, unpacked_path: PathBuf) -> anyhow::Result<PackerHandle> {
+    fn start(
+        path: PathBuf,
+        core: Option<core_affinity::CoreId>,
+        unpacked_path: PathBuf,
+    ) -> anyhow::Result<PackerHandle> {
         let (sender, receiver) = mpsc::channel();
         Ok(PackerHandle {
             sender,
             handle: thread::Builder::new()
                 .name(String::from("entry-packer"))
-                .spawn(|| {
+                .spawn(move || {
+                    if let Some(c) = core {
+                        core_affinity::set_for_current(c);
+                    }
                     Self {
                         path,
                         unpacked_path,
@@ -120,7 +127,7 @@ fn write_entry(path: &mut PathBuf, entry: &Entry) -> Result<(), io::Error> {
     Ok(())
 }
 impl TmpSaver {
-    pub fn new(entry: &Entry) -> anyhow::Result<Self> {
+    pub fn new(core: Option<core_affinity::CoreId>, entry: &Entry) -> anyhow::Result<Self> {
         let tmp_dir = tempfile::Builder::new()
             .prefix("http-recorder-mitmproxy")
             .tempdir()
@@ -130,7 +137,7 @@ impl TmpSaver {
         write_entry(&mut unpacked_path, entry).context("failed to write entry")?;
         Ok(Self {
             unpacked_path: unpacked_path.clone(),
-            packer: Packer::start(tmp_dir.path().to_path_buf(), unpacked_path)
+            packer: Packer::start(tmp_dir.path().to_path_buf(), core, unpacked_path)
                 .context("failed to start packer")?,
             entries: Entries::new(entry.index, entry.timings.clone()),
             tmp_dir: tmp_dir.into_path(),
