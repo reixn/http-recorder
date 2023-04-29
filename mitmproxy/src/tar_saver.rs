@@ -117,6 +117,19 @@ impl TarFile {
             }
         }
         {
+            path.push("entry.bin");
+            let data = {
+                let mut r = Vec::new();
+                ciborium::ser::into_writer(entry, &mut r).unwrap();
+                r
+            };
+            file_header.set_size(data.len() as u64);
+            self.tar_file
+                .append_data(&mut file_header, &path, data.as_slice())
+                .context("failed to write cbor")?;
+            path.pop();
+        }
+        {
             path.push("entry.json");
             let data = serde_json::to_vec(entry).unwrap();
             file_header.set_size(data.len() as u64);
