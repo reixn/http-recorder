@@ -178,11 +178,10 @@ impl DestSaver {
                     .finish()
                     .context("failed to finish packed tar file")?,
             );
-        } else {
-            self.tar_file
-                .add_entry(entry)
-                .context("failed to add entry")?;
         }
+        self.tar_file
+            .add_entry(entry)
+            .context("failed to add entry")?;
         self.entries.update(entry);
         Ok(())
     }
