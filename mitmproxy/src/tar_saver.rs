@@ -9,10 +9,23 @@ use std::{
     thread,
 };
 
+#[derive(Default)]
+struct DirTree {
+    child: HashMap<String, DirTree>,
+}
+
+fn create_dir<W: io::Write>(
+    tar: &mut tar::Builder<W>,
+    header: &mut tar::Header,
+    path: &Path,
+) -> anyhow::Result<()> {
+    tar.append_data(header, path, io::empty())
+        .with_context(|| format!("failed to create dir {}", path.display()))
+}
 struct TarFile {
     entry_info: Entries<()>,
-    hosts: HashMap<Option<http_recorder::url::Host>, String>,
     tar_file: tar::Builder<xz2::write::XzEncoder<io::BufWriter<fs::File>>>,
+    dir_tree: DirTree,
 }
 impl TarFile {
     fn new(dest: &Path, tar_index: u32, entry: &http_recorder::Entry) -> anyhow::Result<Self> {
@@ -29,43 +42,67 @@ impl TarFile {
                 ),
                 9,
             )),
-            hosts: HashMap::new(),
+            dir_tree: DirTree::default(),
         })
     }
-    fn add_entry(&mut self, entry: &http_recorder::Entry) -> anyhow::Result<()> {
-        use http_recorder::{content::Content, request};
-        let mut dir_header = {
+    fn add_entry_parent(&mut self, entry: &http_recorder::Entry) -> anyhow::Result<PathBuf> {
+        let mut header = {
             let mut ret = tar::Header::new_gnu();
             ret.set_mode(0o755);
             ret.set_entry_type(tar::EntryType::Directory);
             ret
         };
+        let mut path = PathBuf::new();
+        let mut node = {
+            let name = match &entry.request.url.host {
+                Some(h) => match h {
+                    http_recorder::url::Host::Domain(d) => d.to_string(),
+                    http_recorder::url::Host::Addr(a) => a.to_string(),
+                },
+                None => String::from("unknown"),
+            };
+            match self.dir_tree.child.entry(name) {
+                hash_map::Entry::Occupied(o) => {
+                    path.push(o.key());
+                    o.into_mut()
+                }
+                hash_map::Entry::Vacant(v) => {
+                    path.push(v.key());
+                    create_dir(&mut self.tar_file, &mut header, path.as_path())?;
+                    v.insert(DirTree::default())
+                }
+            }
+        };
+        if let Some(ps) = entry.request.url.url.path_segments() {
+            for p in ps {
+                if p.is_empty() {
+                    break;
+                }
+                node = match node.child.entry(p.to_string()) {
+                    hash_map::Entry::Occupied(o) => {
+                        path.push(o.key());
+                        o.into_mut()
+                    }
+                    hash_map::Entry::Vacant(v) => {
+                        path.push(v.key());
+                        create_dir(&mut self.tar_file, &mut header, path.as_path())?;
+                        v.insert(DirTree::default())
+                    }
+                };
+            }
+        }
+        path.push(format!("#{}", entry.index));
+        create_dir(&mut self.tar_file, &mut header, path.as_path())?;
+        Ok(path)
+    }
+    fn add_entry(&mut self, entry: &http_recorder::Entry) -> anyhow::Result<()> {
+        use http_recorder::{content::Content, request};
         let mut file_header = {
             let mut ret = tar::Header::new_gnu();
             ret.set_mode(0o444);
             ret
         };
-        let mut path = match self.hosts.entry(entry.request.url.host.clone()) {
-            hash_map::Entry::Occupied(o) => PathBuf::from(o.get().as_str()),
-            hash_map::Entry::Vacant(v) => {
-                let s = v.insert(match &entry.request.url.host {
-                    Some(h) => match h {
-                        http_recorder::url::Host::Domain(d) => d.to_owned(),
-                        http_recorder::url::Host::Addr(a) => a.to_string(),
-                    },
-                    None => String::from("unknown"),
-                });
-                let path = PathBuf::from(s.as_str());
-                self.tar_file
-                    .append_data(&mut dir_header, &path, io::empty())
-                    .context("failed to create domain dir")?;
-                path
-            }
-        };
-        path.push(entry.index.to_string());
-        self.tar_file
-            .append_data(&mut dir_header, &path, io::empty())
-            .context("failed to create dir")?;
+        let mut path = self.add_entry_parent(entry)?;
         if let Some(body) = &entry.request.body {
             match body {
                 request::Body::Content(Content {
@@ -80,6 +117,9 @@ impl TarFile {
                 }
                 request::Body::MultipartForm(v) if !v.is_empty() => {
                     path.push("request-body");
+                    let mut dir_header = tar::Header::new_gnu();
+                    dir_header.set_mode(0o755);
+                    dir_header.set_entry_type(tar::EntryType::Directory);
                     self.tar_file
                         .append_data(&mut dir_header, &path, io::empty())
                         .context("failed to write request body dir")?;
