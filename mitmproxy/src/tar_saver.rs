@@ -225,8 +225,8 @@ impl DestSaver {
                 .finish()
                 .context("failed to finish packed tar file")?,
         );
-        let info = serde_yaml::to_string(&self.entries).unwrap();
-        self.path.push("info.yaml");
+        let info = serde_json::to_vec(&self.entries).unwrap();
+        self.path.push("info.json");
         fs::write(self.path, info).context("failed to write info file")
     }
 }
