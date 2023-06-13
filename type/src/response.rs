@@ -84,14 +84,13 @@ impl Cookie {
 pub struct Cookies(pub Vec<Cookie>);
 impl Cookies {
     pub fn parse_headers(headers: &Headers) -> Result<Self, CookieParseError> {
-        Ok(Self(
-            headers
-                .0
-                .iter()
-                .filter(|h| h.name == header::SET_COOKIE)
-                .map(|h| Cookie::parse_header(&h.value))
-                .try_collect()?,
-        ))
+        let mut ret = Vec::with_capacity(headers.0.len());
+        for h in headers.0.iter() {
+            if h.name == header::SET_COOKIE {
+                ret.push(Cookie::parse_header(&h.value)?);
+            }
+        }
+        Ok(Self(ret))
     }
 }
 

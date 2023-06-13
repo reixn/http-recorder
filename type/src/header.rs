@@ -60,11 +60,11 @@ impl Headers {
         HV: AsRef<[u8]>,
         I: Iterator<Item = (HK, HV)>,
     {
-        Ok(Self(
-            headers
-                .map(|(k, v)| Header::parse_kv(k.as_ref(), v.as_ref()))
-                .try_collect()?,
-        ))
+        let mut ret = Vec::new();
+        for (k, v) in headers.into_iter() {
+            ret.push(Header::parse_kv(k.as_ref(), v.as_ref())?);
+        }
+        Ok(Self(ret))
     }
     pub(crate) fn content_type(&self) -> Result<Option<&str>, ()> {
         Ok(match self.0.iter().find(|v| v.name == CONTENT_TYPE) {

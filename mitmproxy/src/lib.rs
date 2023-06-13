@@ -1,5 +1,3 @@
-#![feature(iterator_try_collect)]
-
 use anyhow::Context;
 use pyo3::{pyclass, pymethods, pymodule, FromPyObject};
 use std::{

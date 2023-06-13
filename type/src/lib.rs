@@ -1,5 +1,3 @@
-#![feature(iterator_try_collect)]
-
 use serde::{Deserialize, Serialize};
 use std::{error, fmt::Display, net::SocketAddr, str::FromStr};
 
